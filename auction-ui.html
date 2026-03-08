@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cricket Auction 2026</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@400;600;700&family=Space+Grotesk:wght@400;600;700&display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0c18;
+      --bg2: #0f1324;
+      --text: #f1f4ff;
+      --muted: #95a0c6;
+      --gold: #ffd700;
+      --orange: #ff6b00;
+      --orange-2: #ff8a2a;
+      --card: rgba(17, 20, 40, 0.9);
+      --border: rgba(255, 215, 0, 0.15);
+      --glow: 0 0 28px rgba(255, 107, 0, 0.35);
+      --radius: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Space Grotesk", sans-serif;
+      background:
+        radial-gradient(900px 600px at 10% 10%, rgba(255, 107, 0, 0.12), transparent 60%),
+        radial-gradient(700px 400px at 85% 20%, rgba(255, 215, 0, 0.12), transparent 55%),
+        var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 32px 18px;
+    }
+
+    .auction-shell {
+      width: min(520px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: 0 30px 70px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+    }
+
+    .auction-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 22px;
+      border-bottom: 1px solid rgba(255, 215, 0, 0.08);
+      background: linear-gradient(120deg, rgba(255, 107, 0, 0.16), transparent 65%);
+    }
+
+    .brand {
+      font-family: "Bebas Neue", sans-serif;
+      font-size: 1.55rem;
+      letter-spacing: 2px;
+      color: var(--gold);
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .header-actions button {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      transition: all 0.2s ease;
+    }
+
+    .header-actions button:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+
+    .auction-body {
+      padding: 26px 28px 30px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 18px;
+    }
+
+    .player-photo {
+      width: 190px;
+      height: 190px;
+      border-radius: 50%;
+      border: 4px solid var(--gold);
+      box-shadow: 0 0 35px rgba(255, 215, 0, 0.35), var(--glow);
+      background: radial-gradient(circle at 30% 30%, #2a2f4d, #101429);
+      display: grid;
+      place-items: center;
+      font-family: "Rajdhani", sans-serif;
+      font-size: 3rem;
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    .player-name {
+      font-family: "Rajdhani", sans-serif;
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    .base-price {
+      color: var(--gold);
+      font-weight: 600;
+      font-size: 1rem;
+    }
+
+    .current-bid {
+      margin-top: 8px;
+      font-family: "Rajdhani", sans-serif;
+      font-size: 2.4rem;
+      color: var(--orange);
+      font-weight: 700;
+      text-shadow: 0 0 18px rgba(255, 107, 0, 0.4);
+    }
+
+    .status-text {
+      color: var(--muted);
+      font-size: 0.95rem;
+      letter-spacing: 0.5px;
+    }
+
+    .bid-controls {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      width: 100%;
+    }
+
+    .bid-controls button {
+      padding: 12px 0;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      font-weight: 700;
+      transition: all 0.2s ease;
+    }
+
+    .bid-controls button:hover {
+      border-color: var(--orange);
+      color: var(--orange);
+      transform: translateY(-1px);
+    }
+
+    .bid-controls .sold-btn {
+      background: linear-gradient(135deg, var(--gold), var(--orange));
+      color: #141414;
+    }
+
+    .bid-controls .sold-btn:hover {
+      color: #141414;
+      box-shadow: var(--glow);
+    }
+
+    .sold-state {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    @media (max-width: 540px) {
+      .auction-shell {
+        border-radius: 18px;
+      }
+
+      .auction-header {
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .auction-body {
+        padding: 22px;
+      }
+
+      .player-photo {
+        width: 160px;
+        height: 160px;
+      }
+
+      .bid-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="auction-shell">
+    <header class="auction-header">
+      <div class="brand">CRICKET AUCTION 2026</div>
+      <div class="header-actions">
+        <button type="button">Squads</button>
+        <button type="button">Exit</button>
+      </div>
+    </header>
+
+    <section class="auction-body" id="auctionBody">
+      <div class="player-photo" id="playerPhoto">P</div>
+      <div class="player-name" id="playerName">Player Name</div>
+      <div class="base-price" id="basePrice">Base Price: ₹20L</div>
+
+      <div class="current-bid" id="currentBid">₹0</div>
+      <div class="status-text" id="statusText">No bids yet</div>
+
+      <div class="bid-controls">
+        <button type="button" data-inc="10">+10</button>
+        <button type="button" data-inc="20">+20</button>
+        <button type="button" data-inc="50">+50</button>
+        <button type="button" class="sold-btn" id="soldBtn">Sold</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const bidEl = document.getElementById("currentBid");
+    const statusEl = document.getElementById("statusText");
+    const soldBtn = document.getElementById("soldBtn");
+    const auctionBody = document.getElementById("auctionBody");
+
+    let currentBid = 0;
+    let sold = false;
+
+    function formatBid(value) {
+      return "₹" + value;
+    }
+
+    document.querySelectorAll("[data-inc]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (sold) return;
+        const inc = parseInt(btn.dataset.inc, 10);
+        currentBid += inc;
+        bidEl.textContent = formatBid(currentBid);
+        statusEl.textContent = "Bidding live";
+      });
+    });
+
+    soldBtn.addEventListener("click", () => {
+      if (sold) return;
+      sold = true;
+      statusEl.textContent = "Sold to Team A";
+      auctionBody.classList.add("sold-state");
+    });
+  </script>
+</body>
+
+</html>
