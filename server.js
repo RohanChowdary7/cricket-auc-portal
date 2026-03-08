@@ -136,30 +136,27 @@ app.delete('/api/session/delete', (req, res) => {
     }
 });
 
+app.use(express.static(path.join(__dirname, 'frontend')));
 app.use(express.static(__dirname));
-app.use(express.static(path.join(__dirname, 'public')));
 
 // DIAGNOSTIC LOGGING
 console.log("--- SERVER DIRECTORY LISTING ---");
 try {
     const files = fs.readdirSync(__dirname);
     console.log("Files in root:", files);
-    if (fs.existsSync(path.join(__dirname, 'public'))) {
-        console.log("Files in public:", fs.readdirSync(path.join(__dirname, 'public')));
-    }
 } catch (err) {
     console.log("Error reading directory:", err);
 }
 console.log("-------------------------------");
 
 app.get('/', (req, res) => {
+    const frontendIndex = path.join(__dirname, 'frontend', 'index.html');
     const rootIndex = path.join(__dirname, 'index.html');
-    const publicIndex = path.join(__dirname, 'public', 'index.html');
 
-    if (fs.existsSync(rootIndex)) {
+    if (fs.existsSync(frontendIndex)) {
+        res.sendFile(frontendIndex);
+    } else if (fs.existsSync(rootIndex)) {
         res.sendFile(rootIndex);
-    } else if (fs.existsSync(publicIndex)) {
-        res.sendFile(publicIndex);
     } else {
         res.status(404).send("Error: index.html not found on server. Please check your upload.");
     }
