@@ -784,6 +784,12 @@ function getRatingTierClass(rating) {
 }
 function initAuth() { const s = loadSession(null); if (s) { currentUser = s; showApp(); return; } showLogin(); }
 function showLogin() { document.getElementById("loginPage").classList.add("active"); document.getElementById("mainApp").classList.add("hidden"); }
+function doLogout() {
+    clearInterval(timerInterval);
+    currentUser = null;
+    sessionStorage.removeItem(SESSION_KEY);
+    showLogin();
+}
 function showApp() {
     document.getElementById("loginPage").classList.remove("active");
     document.getElementById("mainApp").classList.remove("hidden");
@@ -1131,12 +1137,33 @@ function parseCSV(text) {
     const headers = lines[0].split(",").map(function (h) { return h.trim().toLowerCase(); });
     return lines.slice(1).map(function (l) { const cols = l.split(",").map(function (c) { return c.trim().replace(/"/g, ""); }); const obj = {}; headers.forEach(function (h, i) { obj[h] = cols[i] || ""; }); return obj; });
 }
+
+function parsePriceToLakhs(raw) {
+    if (raw == null) return 0;
+    const txt = String(raw).trim().toLowerCase();
+    if (!txt) return 0;
+
+    // Keep digits and decimal point for numeric conversion.
+    const num = parseFloat(txt.replace(/[^0-9.]/g, ""));
+    if (!Number.isFinite(num)) return 0;
+
+    if (/(cr|crore)/.test(txt)) return Math.round(num * 100);
+    if (/(l|lac|lakh)/.test(txt)) return Math.round(num);
+    if (/(k|thousand)/.test(txt)) return Math.round(num / 100);
+
+    // If amount looks like full rupees (>= 1 crore), convert to lakhs.
+    if (num >= 10000000) return Math.round(num / 100000);
+
+    // Default legacy behavior: plain numeric values are assumed to be in lakhs.
+    return Math.round(num);
+}
+
 function processImportRows(rows) {
     importBuffer = [];
     rows.forEach(function (r) {
         const name = r.name || r.playername || r["player name"] || "";
         const cat = r.role || r.category || r.type || "";
-        const bp = parseInt(r.baseprice || r["base price"] || r.price || 0);
+        const bp = parsePriceToLakhs(r.baseprice || r["base price"] || r.price || 0);
         const nat = r.country || r.nationality || "Indian";
         const marq = r.marquee === "1" || r.marquee === "true" || r.marquee === "yes" || r.marquee?.toString().toLowerCase() === "true" || r.marquee?.toString().toLowerCase() === "yes";
 
@@ -2175,7 +2202,8 @@ function quickSkipPlayer() {
 }
 
 function pauseAuction() {
-    if (!currentUser || currentUser.role !== "admin" || auctionState.status !== "live") return;
+    if (!currentUser || currentUser.role !== "admin") return;
+    if (auctionState.status !== "live" && auctionState.status !== "awaiting_next") return;
     if (socket) { socket.emit("auction:pause"); return; }
 
     auctionState.status = "paused"; clearInterval(timerInterval); persist(); updateStatusBadge("paused"); showAuctionButtons("paused"); restoreAuction(); toast("Paused.", "warning");
@@ -2605,10 +2633,19 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // Volume Slider Init
     var volSld = document.getElementById("volumeSlider");
+    var volIcon = document.getElementById("volIcon");
+    var _prevVolume = masterVolume > 0 ? masterVolume : 0.5; // remember last non-zero for unmute
+
+    function updateVolIcon(vol) {
+        if (!volIcon) return;
+        if (vol <= 0) volIcon.textContent = "🔇";
+        else if (vol < 0.4) volIcon.textContent = "🔈";
+        else volIcon.textContent = "🔊";
+    }
+
     if (volSld) {
         volSld.value = masterVolume;
-        
-        // Function to update slider visual appearance
+
         function updateSliderVisual() {
             var percentage = (volSld.value / volSld.max) * 100;
             if (percentage === 0) {
@@ -2617,20 +2654,38 @@ document.addEventListener("DOMContentLoaded", function () {
                 volSld.style.background = 'linear-gradient(90deg, rgba(255, 193, 7, 0.8) 0%, rgba(255, 177, 66, 0.7) ' + percentage + '%, rgba(255, 255, 255, 0.15) ' + percentage + '%)';
             }
         }
-        
-        // Initialize visual on load
+
+        // Initialize visuals on load to match saved volume
         updateSliderVisual();
-        
+        updateVolIcon(masterVolume);
+
         volSld.addEventListener("input", function () {
             masterVolume = parseFloat(this.value);
+            if (masterVolume > 0) _prevVolume = masterVolume;
             localStorage.setItem("ipl_volume", masterVolume);
             updateSliderVisual();
-            var icon = document.getElementById("volIcon");
-            if (icon) {
-                if (masterVolume === 0) icon.textContent = "🔇";
-                else if (masterVolume < 0.5) icon.textContent = "🔈";
-                else icon.textContent = "🔊";
+            updateVolIcon(masterVolume);
+        });
+    }
+
+    // Click on speaker icon to toggle mute / unmute
+    if (volIcon) {
+        volIcon.addEventListener("click", function () {
+            if (masterVolume > 0) {
+                _prevVolume = masterVolume;
+                masterVolume = 0;
+            } else {
+                masterVolume = _prevVolume > 0 ? _prevVolume : 0.5;
             }
+            localStorage.setItem("ipl_volume", masterVolume);
+            if (volSld) {
+                volSld.value = masterVolume;
+                var pct = (masterVolume / volSld.max) * 100;
+                volSld.style.background = pct === 0
+                    ? 'rgba(255, 255, 255, 0.15)'
+                    : 'linear-gradient(90deg, rgba(255, 193, 7, 0.8) 0%, rgba(255, 177, 66, 0.7) ' + pct + '%, rgba(255, 255, 255, 0.15) ' + pct + '%)';
+            }
+            updateVolIcon(masterVolume);
         });
     }
 
@@ -2706,12 +2761,7 @@ document.addEventListener("DOMContentLoaded", function () {
     // LOGOUT
     const logoutBtn = document.getElementById("logoutBtn");
     if (logoutBtn) {
-        logoutBtn.addEventListener("click", function () {
-            clearInterval(timerInterval);
-            currentUser = null;
-            sessionStorage.removeItem(SESSION_KEY);
-            showLogin();
-        });
+        logoutBtn.addEventListener("click", doLogout);
     }
 
     // NAV
@@ -2917,6 +2967,14 @@ document.addEventListener("click", function (e) {
     }
 });
 
+// Backup logout handler in case navbar is re-rendered or initial binding is skipped.
+document.addEventListener("click", function (e) {
+    var btn = e.target.closest("#logoutBtn, .btn-logout");
+    if (!btn) return;
+    e.preventDefault();
+    doLogout();
+});
+
 // Backup button handlers for admin functions (in case DOMContentLoaded fails)
 document.addEventListener("click", function (e) {
     if (e.target.id === "btnAddPlayer") { if (typeof openAddPlayer === "function") openAddPlayer(); }
@@ -2926,6 +2984,8 @@ document.addEventListener("click", function (e) {
     if (e.target.id === "btnConfirmImport") { if (typeof confirmImport === "function") confirmImport(); }
     if (e.target.id === "btnStartAuction") { if (typeof startAuction === "function") startAuction(); }
     if (e.target.id === "btnLobbyStart") { if (typeof doStartAuction === "function") doStartAuction(); }
+    if (e.target.id === "btnPauseAuction") { if (typeof pauseAuction === "function") pauseAuction(); }
+    if (e.target.id === "btnResumeAuction") { if (typeof resumeAuction === "function") resumeAuction(); }
 });
 
 // Cross-tab sync: keep all tabs in sync via localStorage storage events
