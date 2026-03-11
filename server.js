@@ -164,6 +164,7 @@ app.get('/', (req, res) => {
 
 const MAX_SQUAD = 25;
 const NEXT_PLAYER_DELAY_MS = 5000; // Show SOLD/UNSOLD overlay then auto-advance to next player
+const POOL_TRANSITION_SECONDS = 20;
 
 const uid = () => '_' + Math.random().toString(36).substr(2, 9);
 const bidInc = l => l < 100 ? 10 : l < 500 ? 25 : 50;
@@ -172,7 +173,7 @@ let nextPlayerTimeout = null;
 
 let state = {
     players: [], teams: [], auctionHistory: [],
-    auctionState: { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: 30, bids: [] },
+    auctionState: { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: 30, bids: [], pendingPoolSwitch: null, currentPool: 'all', poolAlerts: {} },
     settings: { timerDuration: 30, extension: 10, threshold: 5 },
     adminUser: 'admin', adminPass: 'ipl2026'
 };
@@ -218,6 +219,83 @@ function resolvePlayer() {
     else markUnsold(p);
 }
 
+function normalizePoolName(poolName) {
+    const raw = String(poolName || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+    if (!raw) return '';
+    if (raw === 'all' || raw === 'allplayers') return 'all';
+    if (raw === 'batsman' || raw === 'batsmen') return 'batsman';
+    if (raw === 'bowler' || raw === 'bowlers') return 'bowler';
+    if (raw === 'allrounder' || raw === 'allrounders') return 'allrounder';
+    if (raw === 'wicketkeeper' || raw === 'wicketkeepers' || raw === 'wk') return 'wicketkeeper';
+    if (raw === 'uncapped') return 'uncapped';
+    return raw;
+}
+
+function getPoolFromQueueItem(qItem, player) {
+    if (qItem && typeof qItem === 'object' && qItem.aiPoolName) return qItem.aiPoolName;
+    if (state.auctionState.currentPool) return state.auctionState.currentPool;
+    if (player && String(player.playerStatus || '').trim().toLowerCase() === 'uncapped') return 'Uncapped';
+    if (player && player.category) return player.category;
+    return 'Current Pool';
+}
+
+function isPlayerInPool(player, poolName) {
+    if (!player) return false;
+    const pool = normalizePoolName(poolName);
+    if (pool === 'all') return true;
+    if (pool === 'uncapped') return String(player.playerStatus || '').trim().toLowerCase() === 'uncapped';
+    const category = normalizePoolName(player.category);
+    if (pool === 'batsman') return category === 'batsman';
+    if (pool === 'bowler') return category === 'bowler';
+    if (pool === 'allrounder') return category === 'allrounder';
+    if (pool === 'wicketkeeper') return category === 'wicketkeeper';
+    return category === pool;
+}
+
+function maybeEmitPoolPlayersLeftAlert(targetRemaining) {
+    if (!Array.isArray(state.auctionState.queue)) return;
+    const idx = state.auctionState.currentIndex;
+    if (typeof idx !== 'number' || idx < 0 || idx >= state.auctionState.queue.length) return;
+
+    const currentQItem = state.auctionState.queue[idx];
+    const currentPid = (typeof currentQItem === 'object' && currentQItem !== null) ? currentQItem.id : currentQItem;
+    const currentPlayer = state.players.find(x => x.id === currentPid);
+    const currentPool = getPoolFromQueueItem(currentQItem, currentPlayer);
+    const normalizedCurrentPool = normalizePoolName(currentPool);
+    const isAllPool = normalizedCurrentPool === 'all';
+
+    if (!state.auctionState.poolAlerts || typeof state.auctionState.poolAlerts !== 'object') {
+        state.auctionState.poolAlerts = {};
+    }
+
+    const alertKey = `${normalizedCurrentPool}:${targetRemaining}`;
+    if (state.auctionState.poolAlerts[alertKey]) return;
+
+    let remaining = 0;
+    for (let i = idx + 1; i < state.auctionState.queue.length; i++) {
+        const qItem = state.auctionState.queue[i];
+        const pid = (typeof qItem === 'object' && qItem !== null) ? qItem.id : qItem;
+        const p = state.players.find(x => x.id === pid);
+        if (!p || p.sold || p.isUnsold) continue;
+
+        if (isAllPool) {
+            remaining++;
+            continue;
+        }
+
+        if (isPlayerInPool(p, normalizedCurrentPool)) remaining++;
+    }
+
+    if (remaining === targetRemaining) {
+        state.auctionState.poolAlerts[alertKey] = true;
+        io.emit('auction:pool_players_left_alert', {
+            pool: currentPool,
+            remaining: targetRemaining,
+            message: `${targetRemaining} players left in this pool`
+        });
+    }
+}
+
 const clearAllTimers = () => {
     clearInterval(timerInterval);
     if (introInterval) { clearInterval(introInterval); introInterval = null; }
@@ -242,6 +320,7 @@ function sellPlayer(p, teamId, price) {
     t.purse -= price;
     p.sold = true; p.soldTo = teamId; p.soldPrice = price;
     state.auctionHistory.push({ playerId: p.id, playerName: p.name, category: p.category, teamId, teamName: t.name, price, status: 'sold', ts: Date.now() });
+    maybeEmitPoolPlayersLeftAlert(10);
     clearInterval(timerInterval);
     state.auctionState.status = 'awaiting_next';
     io.emit('player:sold', { player: p, team: t, price, auctionHistory: state.auctionHistory });
@@ -252,6 +331,7 @@ function sellPlayer(p, teamId, price) {
 function markUnsold(p) {
     p.isUnsold = true;
     state.auctionHistory.push({ playerId: p.id, playerName: p.name, category: p.category, teamId: null, teamName: null, price: 0, status: 'unsold', ts: Date.now() });
+    maybeEmitPoolPlayersLeftAlert(10);
     clearInterval(timerInterval);
     state.auctionState.status = 'awaiting_next';
     io.emit('player:unsold', { player: p, auctionHistory: state.auctionHistory });
@@ -260,6 +340,61 @@ function markUnsold(p) {
 }
 
 function nextPlayer() {
+    // If admin queued a pool switch, apply it now between players (never mid-player).
+    const pendingPool = state.auctionState.pendingPoolSwitch;
+    if (pendingPool) {
+        clearInterval(timerInterval);
+        if (nextPlayerTimeout) { clearTimeout(nextPlayerTimeout); nextPlayerTimeout = null; }
+
+        let available = state.players.filter(p => !p.sold && !p.isUnsold);
+        let newQueue;
+        if (pendingPool === 'all') {
+            newQueue = available.map(p => p.id);
+        } else if (pendingPool === 'Uncapped') {
+            newQueue = available.filter(p => p.playerStatus === 'Uncapped').map(p => p.id);
+        } else {
+            newQueue = available.filter(p => p.category === pendingPool).map(p => p.id);
+        }
+
+        if (!newQueue.length) {
+            state.auctionState.pendingPoolSwitch = null;
+            io.emit('toast:incoming', { msg: 'No unsold players in pool: ' + pendingPool, type: 'warning' });
+            // Continue normal flow if chosen pool has no available players.
+        } else {
+            const prevPool = state.auctionState.currentPool || 'Previous Pool';
+            state.auctionState.queue = newQueue;
+            state.auctionState.currentIndex = -1;
+            state.auctionState.currentPool = pendingPool;
+            state.auctionState.pendingPoolSwitch = null;
+            state.auctionState.status = 'pool_transition_manual';
+
+            const firstP = state.players.find(x => x.id === newQueue[0]);
+            const pName = firstP ? firstP.name : '—';
+
+            io.emit('auction:pool_transition', {
+                prevPool,
+                nextPool: pendingPool,
+                nextPlayerName: pName,
+                duration: POOL_TRANSITION_SECONDS,
+                isManual: true
+            });
+
+            let t = POOL_TRANSITION_SECONDS;
+            if (transitionInterval) clearInterval(transitionInterval);
+            transitionInterval = setInterval(() => {
+                t--;
+                io.emit('auction:pool_transition_tick', { remaining: t, nextPool: pendingPool, isManual: true });
+                if (t <= 0) {
+                    clearInterval(transitionInterval);
+                    transitionInterval = null;
+                    state.auctionState.status = 'live';
+                    nextPlayer();
+                }
+            }, 1000);
+            return;
+        }
+    }
+
     const prevIndex = state.auctionState.currentIndex;
     state.auctionState.currentIndex++;
 
@@ -273,6 +408,10 @@ function nextPlayer() {
     const qItem = state.auctionState.queue[state.auctionState.currentIndex];
     const pid = (typeof qItem === 'object' && qItem !== null) ? qItem.id : qItem;
     const p = state.players.find(x => x.id === pid);
+    const currentPoolFromItem = (typeof qItem === 'object' && qItem !== null && qItem.aiPoolName) ? qItem.aiPoolName : null;
+    if (currentPoolFromItem) {
+        state.auctionState.currentPool = currentPoolFromItem;
+    }
 
     // Skip already resolved players
     if (!p || p.sold || p.isUnsold) {
@@ -288,7 +427,7 @@ function nextPlayer() {
     const currPool = (typeof qItem === 'object' && qItem !== null) ? qItem.aiPoolName : null;
 
     if (prevPool && currPool && prevPool !== currPool) {
-        // Pool has changed — pause the game and show a 30-second announcement
+        // Pool has changed — pause the game and show a short transition announcement.
         clearInterval(timerInterval);
         state.auctionState.status = 'pool_transition';
 
@@ -299,11 +438,11 @@ function nextPlayer() {
             prevPool,
             nextPool: currPool,
             nextPlayerName,
-            duration: 60
+            duration: POOL_TRANSITION_SECONDS
         });
 
         // Countdown broadcast every second
-        let transitionTimer = 60;
+        let transitionTimer = POOL_TRANSITION_SECONDS;
         transitionInterval = setInterval(() => {
             transitionTimer--;
             io.emit('auction:pool_transition_tick', { remaining: transitionTimer, nextPool: currPool });
@@ -343,6 +482,8 @@ io.on('connection', socket => {
 
         state.auctionState.queue = buildQueue(pool);
         state.auctionState.currentIndex = -1;
+        state.auctionState.currentPool = pool;
+        state.auctionState.poolAlerts = {};
         state.auctionState.status = 'manual_intro'; // New status for manual mode transition
 
         // Find first player for the announcement
@@ -375,6 +516,8 @@ io.on('connection', socket => {
         if (!queue || !queue.length) return;
         state.auctionState.queue = queue;
         state.auctionState.currentIndex = -1;
+        state.auctionState.currentPool = null;
+        state.auctionState.poolAlerts = {};
         state.auctionState.status = 'ai_intro'; // Set status to our new phase
 
         // Grab info for the UI - FIND THE FIRST ACTUAL PLAYER (skip sold ones)
@@ -425,6 +568,8 @@ io.on('connection', socket => {
         if (!queue || !queue.length) return;
         state.auctionState.queue = queue;
         state.auctionState.currentIndex = -1;
+        state.auctionState.currentPool = 'unsold';
+        state.auctionState.poolAlerts = {};
         state.auctionState.status = 'live';
         io.emit('auction:started', { ...state.auctionState });
         nextPlayer();
@@ -433,51 +578,22 @@ io.on('connection', socket => {
     // Manual mode pool switch: admin picks a new pool mid-auction
     socket.on('auction:switch_pool', ({ pool }) => {
         if (!pool) return;
-        clearInterval(timerInterval);
-        if (nextPlayerTimeout) { clearTimeout(nextPlayerTimeout); nextPlayerTimeout = null; }
+        // Queue switch and apply only after current player resolves.
+        state.auctionState.pendingPoolSwitch = pool;
 
-        // Build new queue from this pool (only unsold & non-isUnsold players)
-        let available = state.players.filter(p => !p.sold && !p.isUnsold);
-        let newQueue;
-        if (pool === 'all') {
-            newQueue = available.map(p => p.id);
-        } else if (pool === 'Uncapped') {
-            newQueue = available.filter(p => p.playerStatus === 'Uncapped').map(p => p.id);
+        const currentQItem = state.auctionState.queue && state.auctionState.queue[state.auctionState.currentIndex];
+        const currentPid = (typeof currentQItem === 'object' && currentQItem !== null) ? currentQItem.id : currentQItem;
+        const currentP = currentPid ? state.players.find(x => x.id === currentPid) : null;
+        const isCurrentResolved = !currentP || currentP.sold || currentP.isUnsold;
+
+        if (isCurrentResolved || state.auctionState.status === 'awaiting_next') {
+            io.emit('toast:incoming', { msg: 'Pool switch applied before the next player.', type: 'info' });
+            if (nextPlayerTimeout) { clearTimeout(nextPlayerTimeout); nextPlayerTimeout = null; }
+            state.auctionState.status = 'live';
+            nextPlayer();
         } else {
-            newQueue = available.filter(p => p.category === pool).map(p => p.id);
+            io.emit('toast:incoming', { msg: 'Pool switch queued. It will apply after current player is completed.', type: 'info' });
         }
-
-        if (!newQueue.length) {
-            io.emit('toast:incoming', { msg: 'No unsold players in pool: ' + pool, type: 'warning' });
-            // Resume current player if it was live
-            startTimer();
-            return;
-        }
-
-        const prevPool = state.auctionState.currentPool || 'Previous Pool';
-        state.auctionState.queue = newQueue;
-        state.auctionState.currentIndex = -1;
-        state.auctionState.currentPool = pool;
-        state.auctionState.status = 'pool_transition_manual';
-
-        // Find first player of new pool
-        const firstP = state.players.find(x => x.id === newQueue[0]);
-        const pName = firstP ? firstP.name : '—';
-
-        io.emit('auction:pool_transition', { prevPool, nextPool: pool, nextPlayerName: pName, duration: 60, isManual: true });
-
-        let t = 60;
-        if (transitionInterval) clearInterval(transitionInterval);
-        transitionInterval = setInterval(() => {
-            t--;
-            io.emit('auction:pool_transition_tick', { remaining: t, nextPool: pool, isManual: true });
-            if (t <= 0) {
-                clearInterval(transitionInterval);
-                transitionInterval = null;
-                state.auctionState.status = 'live';
-                nextPlayer();
-            }
-        }, 1000);
     });
 
     socket.on('auction:pause', () => {
@@ -524,7 +640,7 @@ io.on('connection', socket => {
         state.players = state.players.map(p => ({ ...p, sold: false, soldTo: null, soldPrice: 0, isUnsold: false }));
         state.teams = state.teams.map(t => ({ ...t, purse: t.initialPurse }));
         state.auctionHistory = [];
-        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [] };
+        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [], pendingPoolSwitch: null, currentPool: 'all', poolAlerts: {} };
         io.emit('state:full', state);
     });
 
@@ -533,7 +649,7 @@ io.on('connection', socket => {
         state.players = [];
         state.teams = [];
         state.auctionHistory = [];
-        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [] };
+        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [], pendingPoolSwitch: null, currentPool: 'all', poolAlerts: {} };
         if (fs.existsSync(AUTOSAVE_PATH)) {
             try { fs.unlinkSync(AUTOSAVE_PATH); } catch (e) { }
         }
@@ -633,7 +749,7 @@ io.on('connection', socket => {
 
     socket.on('admin:reset_auction', () => {
         clearAllTimers();
-        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerSecs: 30, timerRemaining: 30, bids: [], undoStack: [] };
+        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerSecs: 30, timerRemaining: 30, bids: [], undoStack: [], pendingPoolSwitch: null, currentPool: 'all', poolAlerts: {} };
         io.emit('state:full', state);
     });
 
@@ -672,6 +788,60 @@ io.on('connection', socket => {
         p.sold = false; p.soldTo = null; p.soldPrice = 0;
         state.auctionHistory = state.auctionHistory.filter(h => h.playerId !== pid);
         io.emit('state:full', state);
+    });
+
+    socket.on('player:undo_sale', payload => {
+        const playerId = payload && payload.playerId;
+        const historyIndex = payload && Number.isInteger(payload.historyIndex) ? payload.historyIndex : -1;
+        if (!playerId) return;
+
+        const p = state.players.find(x => x.id === playerId);
+        if (!p || !p.sold) return;
+
+        const t = state.teams.find(x => x.id === p.soldTo);
+        if (t) t.purse += (p.soldPrice || 0);
+
+        p.sold = false;
+        p.isUnsold = false;
+        p.soldTo = null;
+        p.soldPrice = 0;
+
+        if (historyIndex >= 0 && historyIndex < state.auctionHistory.length) {
+            const h = state.auctionHistory[historyIndex];
+            if (h && h.playerId === playerId && h.status === 'sold') {
+                state.auctionHistory.splice(historyIndex, 1);
+            } else {
+                for (let i = state.auctionHistory.length - 1; i >= 0; i--) {
+                    if (state.auctionHistory[i].playerId === playerId && state.auctionHistory[i].status === 'sold') {
+                        state.auctionHistory.splice(i, 1);
+                        break;
+                    }
+                }
+            }
+        } else {
+            for (let i = state.auctionHistory.length - 1; i >= 0; i--) {
+                if (state.auctionHistory[i].playerId === playerId && state.auctionHistory[i].status === 'sold') {
+                    state.auctionHistory.splice(i, 1);
+                    break;
+                }
+            }
+        }
+
+        if (!Array.isArray(state.auctionState.queue)) state.auctionState.queue = [];
+
+        // Remove future duplicates and reinsert right after current player.
+        state.auctionState.queue = state.auctionState.queue.filter((qItem, idx) => {
+            if (idx <= state.auctionState.currentIndex) return true;
+            const qid = (qItem && typeof qItem === 'object') ? qItem.id : qItem;
+            return qid !== playerId;
+        });
+
+        let insertAt = Math.max((state.auctionState.currentIndex || 0) + 1, 0);
+        if (insertAt > state.auctionState.queue.length) insertAt = state.auctionState.queue.length;
+        state.auctionState.queue.splice(insertAt, 0, playerId);
+
+        io.emit('state:full', state);
+        io.emit('toast:incoming', { msg: `${p.name} moved back into queue after current player.`, type: 'warning' });
     });
 
     socket.on('undo:last', () => {
@@ -770,14 +940,14 @@ io.on('connection', socket => {
         state.players = dp.map(p => ({ ...p, id: uid(), image: '', sold: false }));
         state.teams = dt.map(t => ({ ...t, id: uid(), purse: t.initialPurse }));
         state.auctionHistory = [];
-        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [] };
+        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [], pendingPoolSwitch: null, currentPool: 'all', poolAlerts: {} };
         io.emit('state:full', state);
     });
 
     socket.on('full:reset', () => {
         clearInterval(timerInterval);
         state.players = []; state.teams = []; state.auctionHistory = [];
-        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [] };
+        state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [], pendingPoolSwitch: null, currentPool: 'all', poolAlerts: {} };
         io.emit('state:full', state);
     });
 
@@ -786,6 +956,8 @@ io.on('connection', socket => {
         if (!unsold.length) return;
         state.auctionState.queue = unsold.map(p => p.id);
         state.auctionState.currentIndex = -1;
+        state.auctionState.currentPool = 'unsold';
+        state.auctionState.poolAlerts = {};
         state.auctionState.status = 'live';
         io.emit('auction:started', { ...state.auctionState });
         nextPlayer();

@@ -1,11 +1,20 @@
 // IPL AUCTION 2026 - script.js
 const ADMIN_USER_KEY = "ipl_admin_user", ADMIN_PASS_KEY = "ipl_admin_pass", SESSION_KEY = "ipl_session", PLAYERS_KEY = "ipl_players", TEAMS_KEY = "ipl_teams", HISTORY_KEY = "ipl_history", AUCTION_KEY = "ipl_auction", SETTINGS_KEY = "ipl_settings", MAX_SQUAD = 25;
 const WATCHLIST_PREFIX = "ipl_wl_";
+const IMPORT_BATSMAN_LOGO = "assets/batsmen-logo.jpeg";
+const IMPORT_BOWLER_LOGO = "assets/bowler-logo.jpeg";
+const IMPORT_ALLROUNDER_LOGO = "assets/Allrounder-logo.jpeg";
+const IMPORT_WK_LOGO = "assets/WK-logo.jpeg";
+const DEFAULT_PLAYER_SILHOUETTE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='35' r='22' fill='%23444'/%3E%3Cellipse cx='50' cy='80' rx='35' ry='25' fill='%23444'/%3E%3C/svg%3E";
 let players = [], teams = [], auctionHistory = [], auctionState = { status: "idle", queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerSecs: 30, timerRemaining: 30, bids: [], undoStack: [] }, settings = { timerDuration: 30, extension: 10, threshold: 5 }, currentUser = null, timerInterval = null, pendingConfirm = null;
+var poolTransitionDuration = 20;
 let masterVolume = parseFloat(localStorage.getItem("ipl_volume") || 0.5);
 // AI Mode state
 var aiModeActive = false, aiPool = "all", auctionStartTime = null;
 var _lastHistoryLen = 0;
+var _priorityNews = [];
+var _tickerClockInterval = null;
+var _lastTickerHTML = "";
 var socket = null;
 
 var videoIntroStarted = false;
@@ -176,6 +185,7 @@ try {
                 renderAll();
                 renderSquad();
                 updatePlayerStats();
+                updateNewsTicker();
                 _updateSyncDot("live");
             } catch (err) {
                 console.error("Critical error in state:full handler:", err);
@@ -184,6 +194,14 @@ try {
 
         socket.on("auctionState:sync", function (data) { _applyRemoteState(data); });
         socket.on("toast:incoming", function (data) { toast(data.msg, data.type, null, true); });
+        socket.on("auction:pool_players_left_alert", function (data) {
+            var remaining = (data && typeof data.remaining === "number") ? data.remaining : 10;
+            var message = (data && data.message) ? data.message : (remaining + " players left in this pool");
+            toast(message, "warning", 6000, true);
+            try {
+                alert(message);
+            } catch (e) { }
+        });
 
         // Granular Sync Listeners for Real-Time UI
         socket.on("timer:tick", function (remaining) {
@@ -232,6 +250,7 @@ try {
             showStampOnSpotlight("sold");
             launchConfetti();
             renderPlayers(); renderTeams(); renderHistory(); renderPurseTable(); renderSquad();
+            updateNewsTicker();
             playSoldSound();
             toast((data.playerName || "Player") + " SOLD to " + (teamName || "Team") + " for " + fmtPrice(price) + "!", "success", 4000, true);
         });
@@ -250,6 +269,7 @@ try {
             showCinematicStatus("UNSOLD", data.playerName, null, null);
             showStampOnSpotlight("unsold");
             renderPlayers(); renderHistory(); renderSquad();
+            updateNewsTicker();
             playUnsoldSound();
             toast((data.playerName || "Player") + " went UNSOLD.", "warning", 3000, true);
         });
@@ -275,6 +295,11 @@ try {
         });
 
         socket.on('auction:ai_intro_tick', function (data) {
+            if (!currentUser) {
+                var aiOverlay = document.getElementById("aiIntroOverlay");
+                if (aiOverlay) aiOverlay.classList.add("hidden");
+                return;
+            }
             var overlay = document.getElementById("aiIntroOverlay");
             var display = document.getElementById("aiIntroTimerDisplay");
             var title = document.getElementById("aiIntroTitle");
@@ -321,6 +346,11 @@ try {
         });
 
         socket.on('auction:manual_intro_tick', function (data) {
+            if (!currentUser) {
+                var manOverlay = document.getElementById("manualIntroOverlay");
+                if (manOverlay) manOverlay.classList.add("hidden");
+                return;
+            }
             var overlay = document.getElementById("manualIntroOverlay");
             var display = document.getElementById("manualIntroTimerDisplay");
             var title = document.getElementById("manualIntroTitle");
@@ -368,8 +398,13 @@ try {
             if (typeof showAuctionButtons === "function") showAuctionButtons("live");
         });
 
-        // ── POOL TRANSITION: shown 60s between AI autonomous pools or manual switch ──
+        // ── POOL TRANSITION: shown 20s between AI autonomous pools or manual switch ──
         socket.on('auction:pool_transition', function (data) {
+            if (!currentUser) {
+                var poolOverlay = document.getElementById("poolTransitionOverlay");
+                if (poolOverlay) poolOverlay.classList.add("hidden");
+                return;
+            }
             var overlay = document.getElementById("poolTransitionOverlay");
             if (!overlay) return;
 
@@ -384,7 +419,8 @@ try {
             if (titleEl) titleEl.textContent = data.isManual ? "MANUALLY CHANGED POOL:" : "NEXT POOL:";
             if (nameEl) nameEl.textContent = (data.nextPool || "NEXT").toUpperCase();
             if (firstEl) firstEl.textContent = data.nextPlayerName || "—";
-            if (timerEl) timerEl.textContent = data.duration || 60;
+            poolTransitionDuration = data.duration || 20;
+            if (timerEl) timerEl.textContent = poolTransitionDuration;
             if (barEl) barEl.style.width = "100%";
 
             // Show overlay
@@ -401,11 +437,12 @@ try {
         });
 
         socket.on('auction:pool_transition_tick', function (data) {
+            if (!currentUser) return;
             var timerEl = document.getElementById("poolTransitionTimer");
             var barEl = document.getElementById("poolTransitionBar");
 
             if (timerEl) timerEl.textContent = data.remaining;
-            if (barEl) barEl.style.width = ((data.remaining / 30) * 100) + "%";
+            if (barEl) barEl.style.width = ((data.remaining / Math.max(1, poolTransitionDuration)) * 100) + "%";
 
             // Tick beep for last 5 seconds
             if (data.remaining > 0 && data.remaining <= 5) playBeep(880, 150);
@@ -509,6 +546,7 @@ try {
             if (data && data.auctionHistory) auctionHistory = data.auctionHistory;
             auctionState.status = "ended";
             endAuction(true); // bypass admin check
+            updateNewsTicker();
             toast("Auction complete \u2014 thank you for participating!", "info", 6000, true);
         });
 
@@ -686,6 +724,7 @@ function _applyRemoteState(data) {
         renderTimer(auctionState.timerRemaining, settings ? settings.timerDuration : 30);
     }
     renderTeams(); renderPurseTable(); renderHistory(); renderAnalytics(); updatePlayerStats();
+    updateNewsTicker();
     _updateSyncDot("live");
 }
 // helper used by loadAll to ensure we always have an array
@@ -724,6 +763,113 @@ function loadAll() {
 }
 var uid = function () { return "_" + Math.random().toString(36).substr(2, 9); };
 function fmtPrice(l) { if (l === 0) return "₹0"; if (l < 100) return "₹" + l + "L"; return l % 100 === 0 ? "₹" + (l / 100) + "Cr" : "₹" + (l / 100).toFixed(2) + "Cr"; }
+function escapeHTML(text) {
+    return String(text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+function _tickerItem(text, cls) {
+    return '<span class="' + cls + '">' + escapeHTML(text) + '</span>';
+}
+function updateNewsTickerClock() {
+    var refreshed = document.getElementById("newsTickerRefresh");
+    if (!refreshed) return;
+    refreshed.textContent = "SYNC " + new Date().toLocaleTimeString("en-IN", { hour12: false });
+}
+function ensureNewsTickerClock() {
+    updateNewsTickerClock();
+    if (_tickerClockInterval) return;
+    _tickerClockInterval = setInterval(updateNewsTickerClock, 1000);
+}
+function _getTeamStrategyTag(team) {
+    var squad = players.filter(function (p) { return p.soldTo === team.id; });
+    var spent = (team.initialPurse || 0) - (team.purse || 0);
+    var avg = squad.length ? Math.round(spent / squad.length) : 0;
+    var marquees = squad.filter(function (p) { return p.marquee; }).length;
+
+    var tag = "Balanced Build";
+    if (marquees >= 3) tag = "Star Collectors";
+    else if (spent < (team.initialPurse || 0) * 0.5 && squad.length > 8) tag = "Value Seekers";
+    else if (spent > (team.initialPurse || 0) * 0.85) tag = "Big Spenders";
+    else if (squad.length > (MAX_SQUAD * 0.8)) tag = "Depth Specialists";
+    else if (avg > 500) tag = "Quality over Quantity";
+
+    return {
+        teamName: team.name || "Team",
+        tag: tag,
+        spent: spent,
+        playersCount: squad.length
+    };
+}
+function _buildAiStrategyTickerLine() {
+    if (!teams || !teams.length) return "AI STRATEGY: Waiting for teams";
+
+    var summary = teams.map(_getTeamStrategyTag)
+        .sort(function (a, b) { return b.spent - a.spent; });
+
+    var top = summary.map(function (s) {
+        return s.teamName + " -> " + s.tag + " (" + s.playersCount + "P, " + fmtPrice(s.spent) + " spent)";
+    });
+
+    return "AI STRATEGY BREAKDOWN: " + top.join(" | ");
+}
+function updateNewsTicker() {
+    var bar = document.getElementById("newsTickerBar");
+    var content = document.getElementById("newsTickerContent");
+    if (!bar || !content) return;
+
+    var sold = (auctionHistory || []).filter(function (h) { return h.status === "sold"; });
+    var unsold = (auctionHistory || []).filter(function (h) { return h.status === "unsold"; });
+    var topBuys = sold.slice().sort(function (a, b) { return (b.price || 0) - (a.price || 0); }).slice(0, 3);
+    var lastSold = sold.length ? sold[sold.length - 1] : null;
+    var lastUnsold = unsold.length ? unsold[unsold.length - 1] : null;
+
+    var items = [];
+    if (_priorityNews.length) {
+        _priorityNews.slice(-3).forEach(function (n) {
+            items.push(_tickerItem(n.text, n.type === "alert" ? "nt-alert" : "nt-info"));
+        });
+    }
+
+    if (topBuys.length) {
+        var topText = "TOP BUYS: " + topBuys.map(function (h, i) {
+            return (i + 1) + ") " + h.playerName + " " + fmtPrice(h.price || 0) + " (" + (h.teamName || "Team") + ")";
+        }).join(" | ");
+        items.push(_tickerItem(topText, "nt-record"));
+    } else {
+        items.push(_tickerItem("TOP BUYS: No sold players yet", "nt-record"));
+    }
+
+    items.push(_tickerItem(_buildAiStrategyTickerLine(), "nt-commentary"));
+
+    if (lastSold) {
+        items.push(_tickerItem("LAST SOLD: " + lastSold.playerName + " to " + (lastSold.teamName || "Team") + " for " + fmtPrice(lastSold.price || 0), "nt-sold"));
+    } else {
+        items.push(_tickerItem("LAST SOLD: Waiting for first sale", "nt-sold"));
+    }
+
+    if (lastUnsold) {
+        items.push(_tickerItem("LAST UNSOLD: " + lastUnsold.playerName, "nt-unsold"));
+    } else {
+        items.push(_tickerItem("LAST UNSOLD: None", "nt-unsold"));
+    }
+
+    var html = items.join('<span class="nt-sep">|</span>');
+    if (html !== _lastTickerHTML) {
+        _lastTickerHTML = html;
+        content.innerHTML = html;
+
+        // Restart animation only when ticker text really changed.
+        content.style.animation = "none";
+        void content.offsetWidth;
+        content.style.animation = "tickerScroll 45s linear infinite";
+    }
+
+    updateNewsTickerClock();
+}
 function getWatchlist() { if (!currentUser || currentUser.role !== "team") return new Set(); try { return new Set(JSON.parse(localStorage.getItem(WATCHLIST_PREFIX + currentUser.teamId) || "[]")); } catch (e) { return new Set(); } }
 function saveWatchlist(set) { if (!currentUser || currentUser.role !== "team") return; localStorage.setItem(WATCHLIST_PREFIX + currentUser.teamId, JSON.stringify([...set])); }
 function toggleWatchlist(pid) { var wl = getWatchlist(); if (wl.has(pid)) wl.delete(pid); else wl.add(pid); saveWatchlist(wl); renderPlayers(); }
@@ -772,6 +918,20 @@ function showConfirm(title, msg, onYes) {
 function openModal(id) { var el = document.getElementById(id); if (el) { el.classList.remove("hidden"); el.classList.add("active"); } }
 function closeModal(id) { var el = document.getElementById(id); if (el) { el.classList.remove("active"); el.classList.add("hidden"); } }
 function displayCategory(category) { return category === "All-Rounder" ? "All Rounder" : (category || ""); }
+function getCategoryDefaultLogo(category) {
+    var c = (category || "").toLowerCase().replace(/\s+/g, "");
+    if (c === "batsman") return IMPORT_BATSMAN_LOGO;
+    if (c === "bowler") return IMPORT_BOWLER_LOGO;
+    if (c === "all-rounder" || c === "allrounder") return IMPORT_ALLROUNDER_LOGO;
+    if (c === "wicketkeeper" || c === "wk") return IMPORT_WK_LOGO;
+    return "";
+}
+function getEffectivePlayerImage(p) {
+    if (!p) return "";
+    var categoryLogo = getCategoryDefaultLogo(p.category);
+    if (categoryLogo) return categoryLogo;
+    return p.image || "";
+}
 function getRatingTierClass(rating) {
     if (!rating) return "";
     var r = parseInt(rating, 10);
@@ -783,7 +943,16 @@ function getRatingTierClass(rating) {
     return " rating-tier-5";
 }
 function initAuth() { const s = loadSession(null); if (s) { currentUser = s; showApp(); return; } showLogin(); }
-function showLogin() { document.getElementById("loginPage").classList.add("active"); document.getElementById("mainApp").classList.add("hidden"); }
+function hideGlobalAuctionOverlays() {
+    ["aiIntroOverlay", "manualIntroOverlay", "poolTransitionOverlay", "aiPoolAnnouncement", "strategyOverlay", "goingOverlay"].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.classList.add("hidden");
+        el.classList.remove("active");
+        el.classList.remove("fadeOut");
+    });
+}
+function showLogin() { hideGlobalAuctionOverlays(); document.getElementById("loginPage").classList.add("active"); document.getElementById("mainApp").classList.add("hidden"); }
 function doLogout() {
     clearInterval(timerInterval);
     currentUser = null;
@@ -801,7 +970,7 @@ function showApp() {
     var isSpectator = currentUser && currentUser.role === "spectator";
     if (isSpectator) {
         lastTab = "auction";
-    } else if (currentUser && currentUser.role !== "admin" && (lastTab === "admin" || lastTab === "analytics")) {
+    } else if (currentUser && currentUser.role !== "admin" && lastTab === "admin") {
         lastTab = "auction";
     }
     navTo(lastTab);
@@ -863,8 +1032,8 @@ function navTo(section) {
     if (!currentUser) return;
 
     var isAdmin = currentUser.role === "admin";
-    if (!isAdmin && (section === "admin" || section === "analytics")) {
-        if (section === "admin") toast("Access Denied: Admin Panel.", "error");
+    if (!isAdmin && section === "admin") {
+        toast("Access Denied: Admin Panel.", "error");
         section = "auction";
     }
 
@@ -956,7 +1125,14 @@ function renderPlayers(list) {
         let h = "<div class=\"player-card" + (p.sold ? " sold" : "") + (p.isUnsold ? " unsold" : "") + (isCurrent ? " current" : "") + "\" id=\"pc-" + p.id + "\">";
         h += statusTag;
         h += "<div class=\"pc-img-wrap\">";
-        h += p.image ? "<img src=\"" + p.image + "\" alt=\"" + p.name + "\" />" : "<div class=\"pc-img-placeholder\">" + p.name.charAt(0) + "</div>";
+        var cardImg = getEffectivePlayerImage(p);
+        if (cardImg) {
+            var cardFallback = getCategoryDefaultLogo(p.category);
+            var cardErr = cardFallback ? " onerror=\"this.onerror=null;this.src='" + cardFallback + "'\"" : "";
+            h += "<img src=\"" + cardImg + "\" alt=\"" + p.name + "\"" + cardErr + " />";
+        } else {
+            h += "<div class=\"pc-img-placeholder\">" + p.name.charAt(0) + "</div>";
+        }
         h += p.sold ? "<div class=\"pc-sold-stamp\">SOLD</div>" : (p.isUnsold ? "<div class=\"pc-unsold-stamp\">UNSOLD</div>" : "");
         h += p.marquee ? "<span class=\"pc-marquee\">MQ</span>" : "";
         h += isAdmin ? "<input type=\"checkbox\" class=\"pc-checkbox\" data-id=\"" + p.id + "\" />" : "";
@@ -1207,6 +1383,7 @@ function confirmImport() {
 
     const good = importBuffer.filter(function (r) { return r.status === "OK"; });
     good.forEach(function (r) {
+        const importedImage = getCategoryDefaultLogo(r.category) || "";
         players.push({
             id: uid(),
             name: r.name,
@@ -1221,7 +1398,7 @@ function confirmImport() {
             bowlType: r.bowlType,
             batStyle: r.batStyle,
             bowlStyle: r.bowlStyle,
-            image: "",
+            image: importedImage,
             sold: false
         });
     });
@@ -1299,7 +1476,7 @@ function viewSquad(id) {
     const squad = players.filter(function (p) { return p.soldTo === id; });
     document.getElementById("squadModalTitle").textContent = t.name + " Squad";
     document.getElementById("squadInfoBar").innerHTML = "<div class=\"squad-stat\"><div class=\"squad-stat-val\">" + squad.length + "</div><div class=\"squad-stat-label\">Players</div></div><div class=\"squad-stat\"><div class=\"squad-stat-val\">" + fmtPrice(t.initialPurse - t.purse) + "</div><div class=\"squad-stat-label\">Spent</div></div><div class=\"squad-stat\"><div class=\"squad-stat-val\">" + fmtPrice(t.purse) + "</div><div class=\"squad-stat-label\">Left</div></div>";
-    document.getElementById("squadGrid").innerHTML = squad.length ? squad.map(function (p) { return "<div class=\"squad-player\">" + (p.image ? "<img class=\"sp-img\" src=\"" + p.image + "\" alt=\"" + p.name + "\" />" : "<div class=\"sp-img\" style=\"display:flex;align-items:center;justify-content:center;background:var(--bg3);font-weight:700;color:var(--text3)\">" + p.name.charAt(0) + "</div>") + "<div class=\"sp-name\">" + p.name + "</div><div class=\"sp-price\">" + fmtPrice(p.soldPrice) + "</div></div>"; }).join("") : "<p style=\"color:var(--text2);text-align:center\">No players yet.</p>";
+    document.getElementById("squadGrid").innerHTML = squad.length ? squad.map(function (p) { var img = getEffectivePlayerImage(p); var fallback = getCategoryDefaultLogo(p.category); var imgTag = img ? "<img class=\"sp-img\" src=\"" + img + "\" alt=\"" + p.name + "\"" + (fallback ? " onerror=\"this.onerror=null;this.src='" + fallback + "'\"" : "") + " />" : "<div class=\"sp-img\" style=\"display:flex;align-items:center;justify-content:center;background:var(--bg3);font-weight:700;color:var(--text3)\">" + p.name.charAt(0) + "</div>"; return "<div class=\"squad-player\">" + imgTag + "<div class=\"sp-name\">" + p.name + "</div><div class=\"sp-price\">" + fmtPrice(p.soldPrice) + "</div></div>"; }).join("") : "<p style=\"color:var(--text2);text-align:center\">No players yet.</p>";
     openModal("modalSquad");
 }
 function renderPurseTable() {
@@ -1311,6 +1488,65 @@ function renderPurseTable() {
         return "<tr><td>" + (i + 1) + "</td><td><strong>" + t.name + "</strong>" + (t.code ? " (" + t.code + ")" : "") + "</td><td>" + fmtPrice(t.initialPurse) + "</td><td style=\"color:var(--danger)\">" + fmtPrice(spent) + "</td><td style=\"color:var(--success);font-weight:700\">" + fmtPrice(t.purse) + "</td><td>" + squad + "</td><td><div class=\"purse-bar-wrap\"><div class=\"purse-bar-fill " + pc + "\" style=\"width:" + pct + "%\"></div></div> " + pct.toFixed(0) + "%</td></tr>";
     }).join("");
 }
+
+function renderHistory() {
+    var logEl = document.getElementById("historyLog");
+    var emptyEl = document.getElementById("historyEmpty");
+    if (!logEl || !emptyEl) return;
+
+    if (!auctionHistory || !auctionHistory.length) {
+        logEl.innerHTML = "";
+        emptyEl.classList.remove("hidden");
+        return;
+    }
+
+    emptyEl.classList.add("hidden");
+
+    // Keep original index so bid-history modal maps to the right entry.
+    var rows = auctionHistory.map(function (h, i) { return { h: h, idx: i }; }).reverse();
+
+    var isAdmin = !!(currentUser && currentUser.role === "admin");
+
+    logEl.innerHTML = rows.map(function (row, pos) {
+        var h = row.h;
+        var isSold = h.status === "sold";
+
+        var resolvedTeamName = "—";
+        if (isSold) {
+            if (h.teamName && String(h.teamName).trim()) {
+                resolvedTeamName = h.teamName;
+            } else if (h.teamId) {
+                resolvedTeamName = teamName(h.teamId);
+            } else if (h.playerId) {
+                var p = players.find(function (x) { return x.id === h.playerId; });
+                if (p && p.soldTo) resolvedTeamName = teamName(p.soldTo);
+            }
+            if (!resolvedTeamName || resolvedTeamName === "---") resolvedTeamName = "Unknown Team";
+        }
+
+        var priceText = isSold ? fmtPrice(h.price || 0) : "—";
+        var catText = displayCategory(h.category || "");
+        var badgeCls = isSold ? "sold" : "unsold";
+        var badgeText = isSold ? "Sold" : "Unsold";
+        var undoBtn = (isAdmin && isSold)
+            ? '<button class="btn btn-warning btn-sm hi-undo-btn" onclick="undoHistorySale(' + row.idx + ')">Undo</button>'
+            : "";
+        var bidBtn = (h.bidHistory && h.bidHistory.length)
+            ? '<button class="btn btn-secondary btn-sm hi-bids-btn" onclick="openBidHistory(' + row.idx + ')">Bids</button>'
+            : "";
+
+        return "<div class=\"history-item\">" +
+            "<div class=\"hi-num\">#" + (auctionHistory.length - pos) + "</div>" +
+            "<div><div class=\"hi-player\">" + (h.playerName || "Unknown Player") + "</div><div class=\"hi-category\">" + (catText || "—") + "</div></div>" +
+            "<div class=\"hi-team\">" + (isSold ? ("→ " + resolvedTeamName) : "No buyer") + "</div>" +
+            "<div class=\"hi-price\">" + priceText + "</div>" +
+            "<span class=\"hi-badge " + badgeCls + "\">" + badgeText + "</span>" +
+            undoBtn +
+            bidBtn +
+            "</div>";
+    }).join("");
+}
+
 function renderAnalytics() {
     const sold = auctionHistory.filter(function (h) { return h.status === "sold"; }), unsold = auctionHistory.filter(function (h) { return h.status === "unsold"; });
     const totalSpent = sold.reduce(function (s, h) { return s + h.price; }, 0), avg = sold.length ? Math.round(totalSpent / sold.length) : 0;
@@ -1422,6 +1658,83 @@ function toggleDarkMode() { const html = document.documentElement, isDark = html
 function exportJSON() { const a = document.createElement("a"); a.href = "data:application/json," + encodeURIComponent(JSON.stringify({ players: players, teams: teams, auctionHistory: auctionHistory, exportedAt: new Date().toISOString() }, null, 2)); a.download = "ipl_auction_results.json"; a.click(); }
 function exportCSV() { const rows = [["Player", "Category", "Status", "Team", "Price"]].concat(auctionHistory.map(function (h) { return [h.playerName, h.category, h.status, h.teamName || "", h.price || 0]; })); const a = document.createElement("a"); a.href = "data:text/csv," + encodeURIComponent(rows.map(function (r) { return r.join(","); }).join("\n")); a.download = "ipl_auction.csv"; a.click(); }
 function openRevertSingle(pid) { showConfirm("Revert Player", "Mark as unsold and refund team?", function () { revertPlayer(pid); }); }
+
+function queuePlayerAfterCurrent(pid) {
+    if (!auctionState.queue) auctionState.queue = [];
+    var insertAt = Math.max(auctionState.currentIndex + 1, 0);
+
+    // De-duplicate future occurrences so the player reappears only once.
+    auctionState.queue = auctionState.queue.filter(function (qItem, idx) {
+        if (idx <= auctionState.currentIndex) return true;
+        var qid = (typeof qItem === "object" && qItem !== null) ? qItem.id : qItem;
+        return qid !== pid;
+    });
+
+    if (insertAt > auctionState.queue.length) insertAt = auctionState.queue.length;
+    auctionState.queue.splice(insertAt, 0, pid);
+}
+
+function undoSaleLocal(pid, historyIndex) {
+    var p = players.find(function (x) { return x.id === pid; });
+    if (!p || !p.sold) return false;
+
+    var t = teams.find(function (x) { return x.id === p.soldTo; });
+    if (t) t.purse += (p.soldPrice || 0);
+
+    p.sold = false;
+    p.isUnsold = false;
+    p.soldTo = null;
+    p.soldPrice = 0;
+
+    if (typeof historyIndex === "number" && historyIndex >= 0 && historyIndex < auctionHistory.length && auctionHistory[historyIndex] && auctionHistory[historyIndex].playerId === pid) {
+        auctionHistory.splice(historyIndex, 1);
+    } else {
+        for (var i = auctionHistory.length - 1; i >= 0; i--) {
+            if (auctionHistory[i].playerId === pid && auctionHistory[i].status === "sold") {
+                auctionHistory.splice(i, 1);
+                break;
+            }
+        }
+    }
+
+    queuePlayerAfterCurrent(pid);
+    persist();
+    renderPlayers();
+    renderTeams();
+    renderPurseTable();
+    renderHistory();
+    updatePlayerStats();
+    updateQueue();
+    return true;
+}
+
+function undoHistorySale(historyIndex) {
+    if (!currentUser || currentUser.role !== "admin") {
+        toast("Only admin can undo sold entries.", "error");
+        return;
+    }
+
+    var h = auctionHistory[historyIndex];
+    if (!h || h.status !== "sold" || !h.playerId) {
+        toast("Only sold entries can be undone.", "warning");
+        return;
+    }
+
+    showConfirm("Undo Sold Player", "This will refund the team and queue the player right after the current player.", function () {
+        if (socket) {
+            socket.emit("player:undo_sale", { playerId: h.playerId, historyIndex: historyIndex });
+            toast("Undo requested. Player will re-enter the auction queue.", "warning");
+            return;
+        }
+
+        if (undoSaleLocal(h.playerId, historyIndex)) {
+            toast("Sale undone. Player queued after current player.", "warning");
+        } else {
+            toast("Unable to undo this sale.", "error");
+        }
+    });
+}
+
 function revertPlayer(pid) {
     if (socket) {
         socket.emit("player:revert", pid);
@@ -1512,6 +1825,7 @@ function renderAll() {
         renderAnalytics();
         renderAdminPanel();
         updateAuctionUI();
+        updateNewsTicker();
     } catch (err) {
         console.warn("RenderAll suppressed a crash:", err);
     }
@@ -1811,8 +2125,19 @@ function renderCurrentPlayer(p) {
     }
 
     var img = document.getElementById("auctionPlayerImg");
-    var imgSrc = p.image || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='35' r='22' fill='%23444'/%3E%3Cellipse cx='50' cy='80' rx='35' ry='25' fill='%23444'/%3E%3C/svg%3E";
-    img.src = imgSrc + (imgSrc.includes('?') ? '&' : '?') + 't=' + Date.now();
+    var imgSrc = getEffectivePlayerImage(p) || DEFAULT_PLAYER_SILHOUETTE;
+    var finalImgSrc = imgSrc;
+    if (imgSrc && !imgSrc.startsWith("data:")) {
+        finalImgSrc = imgSrc + (imgSrc.includes('?') ? '&' : '?') + 't=' + Date.now();
+    }
+    img.onerror = null;
+    var stageFallback = getCategoryDefaultLogo(p.category);
+    if (stageFallback) {
+        img.onerror = function () { this.onerror = null; this.src = stageFallback; };
+    }
+    img.src = finalImgSrc;
+    img.style.opacity = stageFallback ? "0.3" : "1";
+    img.style.transition = "opacity .25s ease";
     var mBadge = document.getElementById("marqueeBadge");
     if (p.marquee) { mBadge.classList.remove("hidden"); stage.classList.add("spotlight-anim"); }
     else { mBadge.classList.add("hidden"); stage.classList.remove("spotlight-anim"); }
@@ -1870,6 +2195,7 @@ function renderCurrentPlayer(p) {
     document.getElementById("livePlayerCat").textContent = p.category;
     document.getElementById("liveBasePrice").textContent = fmtPrice(p.basePrice);
     document.getElementById("livePlayerImg").src = img.src;
+    document.getElementById("livePlayerImg").style.opacity = stageFallback ? "0.3" : "1";
     var liveRatBatEl = document.getElementById("liveRatBat");
     var lrStyle = getRatingStyleObj(p.overall);
     liveRatBatEl.textContent = p.overall || "—";
@@ -2534,7 +2860,10 @@ function showSquadCard(teamId) {
     inner += "<div class=\"sc-team-name\" style=\"color:" + tc + "\">" + t.name + "</div>";
     inner += "<div class=\"sc-meta\">" + squad.length + " Players &nbsp;|&nbsp; Spent: " + fmtPrice(t.initialPurse - t.purse) + " &nbsp;|&nbsp; Left: " + fmtPrice(t.purse) + "</div></div>";
     inner += "<div class=\"sc-players\">" + (squad.length ? squad.map(function (p) {
-        return "<div class=\"sc-player\">" + (p.image ? "<img src=\"" + p.image + "\" style=\"width:44px;height:44px;border-radius:50%;object-fit:cover;display:block;margin:0 auto 6px\">" : "") + "<div class=\"sc-player-name\">" + p.name + "</div><div class=\"sc-player-cat cat-badge cat-" + p.category + "\" style=\"font-size:.55rem;margin-bottom:3px\">" + displayCategory(p.category) + "</div><div class=\"sc-player-price\">" + fmtPrice(p.soldPrice) + "</div></div>";
+        var cardImg = getEffectivePlayerImage(p);
+        var fallback = getCategoryDefaultLogo(p.category);
+        var cardImgTag = cardImg ? "<img src=\"" + cardImg + "\" style=\"width:44px;height:44px;border-radius:50%;object-fit:cover;display:block;margin:0 auto 6px\"" + (fallback ? " onerror=\"this.onerror=null;this.src='" + fallback + "'\"" : "") + ">" : "";
+        return "<div class=\"sc-player\">" + cardImgTag + "<div class=\"sc-player-name\">" + p.name + "</div><div class=\"sc-player-cat cat-badge cat-" + p.category + "\" style=\"font-size:.55rem;margin-bottom:3px\">" + displayCategory(p.category) + "</div><div class=\"sc-player-price\">" + fmtPrice(p.soldPrice) + "</div></div>";
     }).join("") : "<p style=\"color:var(--text2);text-align:center;padding:20px\">No players bought.</p>") + "</div>";
     document.getElementById("squadCardInner").innerHTML = inner;
     currentSquadCardIndex = teams.findIndex(function (x) { return x.id === teamId; });
@@ -2630,6 +2959,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (darkToggle) darkToggle.textContent = savedTheme === "dark" ? "🌙" : "☀";
 
     initAuth();
+    ensureNewsTickerClock();
 
     // Volume Slider Init
     var volSld = document.getElementById("volumeSlider");
@@ -2644,48 +2974,59 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     if (volSld) {
-        volSld.value = masterVolume;
+        function clampVolume(v) {
+            var n = parseFloat(v);
+            if (!isFinite(n)) n = 0;
+            if (n < 0) n = 0;
+            if (n > 1) n = 1;
+            // Snap near-zero slider values to exact mute for consistent UI.
+            if (n <= 0.1) n = 0;
+            return Math.round(n * 10) / 10;
+        }
 
-        function updateSliderVisual() {
-            var percentage = (volSld.value / volSld.max) * 100;
-            if (percentage === 0) {
-                volSld.style.background = 'rgba(255, 255, 255, 0.15)';
+        function updateSliderVisual(vol) {
+            var max = parseFloat(volSld.max || "1") || 1;
+            var percentage = Math.max(0, Math.min(100, (vol / max) * 100));
+            var isMuted = percentage <= 0.01;
+            volSld.classList.toggle("muted", isMuted);
+            if (percentage <= 0.01) {
+                // Explicitly clear inline fill style so muted CSS always wins.
+                volSld.style.background = '';
             } else {
-                volSld.style.background = 'linear-gradient(90deg, rgba(255, 193, 7, 0.8) 0%, rgba(255, 177, 66, 0.7) ' + percentage + '%, rgba(255, 255, 255, 0.15) ' + percentage + '%)';
+                volSld.style.background = 'linear-gradient(90deg, rgba(255, 193, 7, 0.8) 0%, rgba(255, 177, 66, 0.7) ' + percentage + '%, rgba(255, 255, 255, 0.15) ' + percentage + '%, rgba(255, 255, 255, 0.15) 100%)';
             }
         }
 
-        // Initialize visuals on load to match saved volume
-        updateSliderVisual();
-        updateVolIcon(masterVolume);
+        function setVolume(vol) {
+            masterVolume = clampVolume(vol);
+            if (masterVolume > 0) _prevVolume = masterVolume;
+            localStorage.setItem("ipl_volume", String(masterVolume));
+            volSld.value = String(masterVolume);
+            updateSliderVisual(masterVolume);
+            updateVolIcon(masterVolume);
+        }
+
+        // Initialize visuals on load to match saved volume.
+        setVolume(masterVolume);
 
         volSld.addEventListener("input", function () {
-            masterVolume = parseFloat(this.value);
-            if (masterVolume > 0) _prevVolume = masterVolume;
-            localStorage.setItem("ipl_volume", masterVolume);
-            updateSliderVisual();
-            updateVolIcon(masterVolume);
+            setVolume(this.value);
         });
     }
 
     // Click on speaker icon to toggle mute / unmute
     if (volIcon) {
         volIcon.addEventListener("click", function () {
-            if (masterVolume > 0) {
-                _prevVolume = masterVolume;
-                masterVolume = 0;
-            } else {
-                masterVolume = _prevVolume > 0 ? _prevVolume : 0.5;
-            }
-            localStorage.setItem("ipl_volume", masterVolume);
+            var nextVol = masterVolume > 0 ? 0 : (_prevVolume > 0 ? _prevVolume : 0.5);
             if (volSld) {
-                volSld.value = masterVolume;
-                var pct = (masterVolume / volSld.max) * 100;
-                volSld.style.background = pct === 0
-                    ? 'rgba(255, 255, 255, 0.15)'
-                    : 'linear-gradient(90deg, rgba(255, 193, 7, 0.8) 0%, rgba(255, 177, 66, 0.7) ' + pct + '%, rgba(255, 255, 255, 0.15) ' + pct + '%)';
+                // Keep visual + state update path identical to slider drag.
+                volSld.value = String(nextVol);
+                volSld.dispatchEvent(new Event("input", { bubbles: true }));
+            } else {
+                masterVolume = nextVol;
+                localStorage.setItem("ipl_volume", String(masterVolume));
+                updateVolIcon(masterVolume);
             }
-            updateVolIcon(masterVolume);
         });
     }
 
@@ -2974,6 +3315,73 @@ document.addEventListener("click", function (e) {
     e.preventDefault();
     doLogout();
 });
+
+// Backup login role handler so Team/Spectator tabs always work.
+function switchLoginRole(role) {
+    var valid = (role === "admin" || role === "team" || role === "spectator") ? role : "admin";
+    document.querySelectorAll(".role-tab").forEach(function (t) {
+        t.classList.toggle("active", t.dataset.role === valid);
+    });
+    var adminForm = document.getElementById("adminLoginForm");
+    var teamForm = document.getElementById("teamLoginForm");
+    var spectatorForm = document.getElementById("spectatorLoginForm");
+    if (adminForm) adminForm.classList.toggle("active", valid === "admin");
+    if (teamForm) teamForm.classList.toggle("active", valid === "team");
+    if (spectatorForm) spectatorForm.classList.toggle("active", valid === "spectator");
+}
+
+document.addEventListener("click", function (e) {
+    var roleBtn = e.target.closest(".role-tab");
+    if (!roleBtn) return;
+    e.preventDefault();
+    switchLoginRole(roleBtn.dataset.role);
+});
+
+// Backup login submit handlers to avoid lockout if main binding path is interrupted.
+document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (!form || !form.id) return;
+
+    if (form.id === "adminLoginForm") {
+        e.preventDefault();
+        var u = (document.getElementById("adminUser") || {}).value;
+        var p = (document.getElementById("adminPass") || {}).value;
+        var errEl = document.getElementById("adminLoginError");
+        if ((u || "").trim() === localStorage.getItem(ADMIN_USER_KEY) && (p || "") === localStorage.getItem(ADMIN_PASS_KEY)) {
+            currentUser = { role: "admin", name: "Admin", username: "admin" };
+            saveSession(currentUser);
+            if (errEl) errEl.classList.add("hidden");
+            showApp();
+        } else if (errEl) {
+            errEl.classList.remove("hidden");
+        }
+        return;
+    }
+
+    if (form.id === "teamLoginForm") {
+        e.preventDefault();
+        var teamU = ((document.getElementById("teamUser") || {}).value || "").trim().toLowerCase();
+        var teamP = (document.getElementById("teamPass") || {}).value || "";
+        var teamErr = document.getElementById("teamLoginError");
+        var t = teams.find(function (x) { return x.username === teamU && x.password === teamP; });
+        if (t) {
+            currentUser = { role: "team", teamId: t.id, name: t.name, username: t.username };
+            saveSession(currentUser);
+            if (teamErr) teamErr.classList.add("hidden");
+            showApp();
+        } else if (teamErr) {
+            teamErr.classList.remove("hidden");
+        }
+        return;
+    }
+
+    if (form.id === "spectatorLoginForm") {
+        e.preventDefault();
+        currentUser = { role: "spectator", name: "Guest Spectator", username: "spectator" };
+        saveSession(currentUser);
+        showApp();
+    }
+}, true);
 
 // Backup button handlers for admin functions (in case DOMContentLoaded fails)
 document.addEventListener("click", function (e) {
@@ -3581,7 +3989,9 @@ function showStrategyOverlay(title, desc, teamColor, teamName, relevantPlayers) 
     // Inject player chips
     var container = document.getElementById("strategyPlayers");
     container.innerHTML = relevantPlayers.map(function (p) {
-        var imgPart = p.image ? "<img src=\"" + p.image + "\" class=\"strat-p-img\">" : "<div class=\"strat-p-img\" style=\"background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;font-size:10px;width:24px;height:24px;border-radius:50%\">" + p.name[0] + "</div>";
+        var chipImg = getEffectivePlayerImage(p);
+        var fallback = getCategoryDefaultLogo(p.category);
+        var imgPart = chipImg ? "<img src=\"" + chipImg + "\" class=\"strat-p-img\"" + (fallback ? " onerror=\"this.onerror=null;this.src='" + fallback + "'\"" : "") + ">" : "<div class=\"strat-p-img\" style=\"background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;font-size:10px;width:24px;height:24px;border-radius:50%\">" + p.name[0] + "</div>";
         return "<div class=\"strat-player-chip\">" + imgPart + "<span class=\"strat-p-name\">" + p.name + "</span></div>";
     }).join("");
 

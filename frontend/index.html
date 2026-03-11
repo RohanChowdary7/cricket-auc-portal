@@ -300,7 +300,7 @@
         <li><a href="#" class="nav-link" data-section="teams" id="navTeams">🏟 Teams & Squads</a></li>
         <li><a href="#" class="nav-link" data-section="purse" id="navPurse">💰 Purse Table</a></li>
         <li><a href="#" class="nav-link" data-section="history" id="navHistory">📜 Auction History</a></li>
-        <li class="admin-only-nav"><a href="#" class="nav-link" data-section="analytics" id="navAnalytics">📊
+        <li><a href="#" class="nav-link" data-section="analytics" id="navAnalytics">📊
             Analytics</a></li>
         <li class="admin-only-nav"><a href="#" class="nav-link" data-section="admin" id="navAdmin">⚙ Admin Panel</a>
         </li>
@@ -700,7 +700,7 @@
         <div class="section-header">
           <h2 class="section-title">📊 Auction Analytics</h2>
           <div class="header-actions">
-            <button class="btn btn-primary" id="btnGenerateReport" onclick="generateAuctionReport()">📰 Generate
+            <button class="btn btn-primary admin-only" id="btnGenerateReport" onclick="generateAuctionReport()">📰 Generate
               Report</button>
 
           </div>
@@ -1224,7 +1224,7 @@
           the auction</p>
 
         <!-- Mode Cards -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
+        <div class="lobby-mode-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
           <!-- AI MODE CARD -->
           <div id="lobbyCardAi" onclick="selectLobbyMode('ai')"
             style="cursor:pointer;border:2px solid rgba(255,255,255,0.1);border-radius:14px;padding:22px 18px;text-align:center;transition:all .2s;background:rgba(255,255,255,0.03);">
@@ -1422,6 +1422,19 @@
         <button class="btn btn-success" id="btnConfirmSaveSession" onclick="confirmSaveSession()">💾 Save</button>
       </div>
     </div>
+  </div>
+
+  <div class="news-ticker-bar" id="newsTickerBar" aria-live="polite">
+    <div class="news-ticker-label">
+      <span class="live-blink">LIVE</span>
+      <span>AUCTION NEWS</span>
+    </div>
+    <div class="news-ticker-track">
+      <div class="news-ticker-content" id="newsTickerContent">
+        <span class="nt-info">Waiting for live auction updates...</span>
+      </div>
+    </div>
+    <div class="news-ticker-refresh" id="newsTickerRefresh">SYNC --:--:--</div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
