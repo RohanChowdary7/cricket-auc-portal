@@ -2988,8 +2988,8 @@ textarea {
   stroke: var(--orange);
   stroke-width: 10;
   stroke-linecap: round;
-  stroke-dasharray: 440;
-  /* Updated for 160px */
+  stroke-dasharray: 314.16;
+  /* Updated for r=50 (circumference = 2π*50) */
   stroke-dashoffset: 0;
   transition: stroke-dashoffset 0.9s linear, stroke 0.3s ease;
   filter: drop-shadow(0 0 8px var(--orange-glow));
@@ -3601,6 +3601,57 @@ textarea {
 .full-select option {
   background: var(--bg-deep);
   color: #ffffff;
+}
+
+/* Styled Alert Modal */
+.modal-alert {
+  background: linear-gradient(135deg, rgba(240, 80, 80, 0.95) 0%, rgba(255, 100, 80, 0.95) 100%);
+  border: 2px solid #ff6b6b;
+}
+
+.modal-alert-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 24px 16px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  gap: 12px;
+}
+
+.modal-alert-header h3 {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0;
+}
+
+.modal-alert-icon {
+  font-size: 2.5rem;
+  display: block;
+}
+
+.modal-alert .modal-body {
+  text-align: center;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.modal-alert .modal-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.modal-alert .btn-block {
+  width: 100%;
+  background: #ff5252;
+  border: none;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 12px 24px;
+}
+
+.modal-alert .btn-block:hover {
+  background: #ff3838;
 }
 
 /* Import */
@@ -4768,13 +4819,13 @@ textarea {
   background: linear-gradient(90deg, #ff0022, #b91c1c);
   color: #fff;
   font-family: 'Bebas Neue', sans-serif;
-  font-size: 1.4rem;
-  letter-spacing: 3px;
-  padding: 0 35px;
+  font-size: 1.2rem;
+  letter-spacing: 2px;
+  padding: 0 24px;
   height: 100%;
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 10px;
   white-space: nowrap;
   box-shadow: 10px 0 30px rgba(0, 0, 0, 0.3);
   z-index: 2;
@@ -4791,7 +4842,7 @@ textarea {
 
 .news-ticker-bar.breaking-news-mode .news-ticker-label {
   background: linear-gradient(90deg, #ff0000, #900000);
-  padding: 0 45px;
+  padding: 0 30px;
   box-shadow: 15px 0 40px rgba(0, 0, 0, 0.5);
   border-right: 3px solid #ffd700;
 }

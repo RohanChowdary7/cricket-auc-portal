@@ -194,14 +194,6 @@ try {
 
         socket.on("auctionState:sync", function (data) { _applyRemoteState(data); });
         socket.on("toast:incoming", function (data) { toast(data.msg, data.type, null, true); });
-        socket.on("auction:pool_players_left_alert", function (data) {
-            var remaining = (data && typeof data.remaining === "number") ? data.remaining : 10;
-            var message = (data && data.message) ? data.message : (remaining + " players left in this pool");
-            toast(message, "warning", 6000, true);
-            try {
-                alert(message);
-            } catch (e) { }
-        });
 
         // Granular Sync Listeners for Real-Time UI
         socket.on("timer:tick", function (remaining) {
@@ -914,6 +906,15 @@ function showConfirm(title, msg, onYes) {
     document.getElementById("confirmMessage").textContent = msg;
     pendingConfirm = onYes;
     openModal("modalConfirm");
+}
+function showAlert(title, msg, icon) {
+    var iconEl = document.getElementById("alertIcon");
+    var alertTitle = document.getElementById("alertTitle");
+    var alertMsg = document.getElementById("alertMessage");
+    if (iconEl) iconEl.textContent = icon || "ℹ️";
+    if (alertTitle) alertTitle.textContent = title || "Alert";
+    if (alertMsg) alertMsg.textContent = msg || "Message";
+    openModal("modalAlert");
 }
 function openModal(id) { var el = document.getElementById(id); if (el) { el.classList.remove("hidden"); el.classList.add("active"); } }
 function closeModal(id) { var el = document.getElementById(id); if (el) { el.classList.remove("active"); el.classList.add("hidden"); } }
@@ -3198,6 +3199,10 @@ var btnConfirmYes = document.getElementById("btnConfirmYes");
 if (btnConfirmYes) btnConfirmYes.addEventListener("click", function () { if (pendingConfirm) { var cb = pendingConfirm; pendingConfirm = null; cb(); } closeModal("modalConfirm"); });
 var btnConfirmNo = document.getElementById("btnConfirmNo");
 if (btnConfirmNo) btnConfirmNo.addEventListener("click", function () { pendingConfirm = null; closeModal("modalConfirm"); });
+
+// ALERT DIALOG
+var btnAlertOk = document.getElementById("btnAlertOk");
+if (btnAlertOk) btnAlertOk.addEventListener("click", function () { closeModal("modalAlert"); });
 
 // MODAL CLOSE - handle close button and data-modal buttons
 document.addEventListener("click", function (e) {
