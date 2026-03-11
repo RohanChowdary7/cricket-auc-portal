@@ -163,6 +163,8 @@ app.get('/', (req, res) => {
 });
 
 const MAX_SQUAD = 25;
+const MAX_CONCURRENT_ADMINS = 2;
+const MAX_CONCURRENT_TEAM_LOGINS = 1;
 const NEXT_PLAYER_DELAY_MS = 5000; // Show SOLD/UNSOLD overlay then auto-advance to next player
 const POOL_TRANSITION_SECONDS = 20;
 
@@ -170,6 +172,60 @@ const uid = () => '_' + Math.random().toString(36).substr(2, 9);
 const bidInc = l => l < 100 ? 10 : l < 500 ? 25 : 50;
 
 let nextPlayerTimeout = null;
+const activeAdminSockets = new Set();
+const activeTeamSockets = new Map();
+
+function emitAuthPresence(target) {
+    const payload = {
+        activeAdmins: activeAdminSockets.size,
+        maxAdmins: MAX_CONCURRENT_ADMINS
+    };
+
+    if (target && typeof target.emit === 'function') {
+        target.emit('auth:presence', payload);
+        return;
+    }
+
+    io.emit('auth:presence', payload);
+}
+
+function releaseSocketAuth(socket) {
+    if (!socket || !socket.data || !socket.data.authClaim) return;
+    const claim = socket.data.authClaim;
+
+    if (claim.role === 'admin') {
+        activeAdminSockets.delete(socket.id);
+    }
+
+    if (claim.role === 'team' && claim.teamKey) {
+        const teamSet = activeTeamSockets.get(claim.teamKey);
+        if (teamSet) {
+            teamSet.delete(socket.id);
+            if (!teamSet.size) activeTeamSockets.delete(claim.teamKey);
+        }
+    }
+
+    socket.data.authClaim = null;
+    emitAuthPresence();
+}
+
+function claimAuthSlot(socket, claim) {
+    releaseSocketAuth(socket);
+
+    if (claim.role === 'admin') {
+        activeAdminSockets.add(socket.id);
+    }
+
+    if (claim.role === 'team' && claim.teamKey) {
+        if (!activeTeamSockets.has(claim.teamKey)) {
+            activeTeamSockets.set(claim.teamKey, new Set());
+        }
+        activeTeamSockets.get(claim.teamKey).add(socket.id);
+    }
+
+    socket.data.authClaim = claim;
+    emitAuthPresence();
+}
 
 let state = {
     players: [], teams: [], auctionHistory: [],
@@ -428,7 +484,64 @@ function nextPlayer() {
 
 io.on('connection', socket => {
     console.log('Connected:', socket.id);
+    socket.data.authClaim = null;
     socket.emit('state:full', state);
+    emitAuthPresence(socket);
+
+    socket.on('auth:login', (payload, cb) => {
+        const done = typeof cb === 'function' ? cb : () => { };
+        const role = payload && payload.role;
+
+        if (role === 'admin') {
+            if (!activeAdminSockets.has(socket.id) && activeAdminSockets.size >= MAX_CONCURRENT_ADMINS) {
+                done({ success: false, message: `Only ${MAX_CONCURRENT_ADMINS} admins can be logged in at once.` });
+                return;
+            }
+            claimAuthSlot(socket, { role: 'admin' });
+            done({ success: true });
+            return;
+        }
+
+        if (role === 'team') {
+            const teamIdRaw = payload && payload.teamId;
+            const usernameRaw = payload && payload.username;
+            let team = null;
+
+            if (teamIdRaw != null) {
+                team = state.teams.find(t => String(t.id) === String(teamIdRaw));
+            }
+            if (!team && usernameRaw) {
+                const normalizedUsername = String(usernameRaw).trim().toLowerCase();
+                team = state.teams.find(t => String(t.username || '').trim().toLowerCase() === normalizedUsername);
+            }
+            if (!team) {
+                done({ success: false, message: 'Team not found for this login.' });
+                return;
+            }
+
+            const teamKey = String(team.id);
+            const currentSet = activeTeamSockets.get(teamKey);
+            const activeCount = currentSet ? currentSet.size : 0;
+            const alreadyClaimedBySocket = currentSet ? currentSet.has(socket.id) : false;
+
+            if (!alreadyClaimedBySocket && activeCount >= MAX_CONCURRENT_TEAM_LOGINS) {
+                done({ success: false, message: `Only ${MAX_CONCURRENT_TEAM_LOGINS} user can be logged in for this team at once.` });
+                return;
+            }
+
+            claimAuthSlot(socket, { role: 'team', teamKey });
+            done({ success: true });
+            return;
+        }
+
+        // Spectator/other roles do not consume constrained slots.
+        claimAuthSlot(socket, { role: 'spectator' });
+        done({ success: true });
+    });
+
+    socket.on('auth:logout', () => {
+        releaseSocketAuth(socket);
+    });
 
     socket.on('auction:start', (payload) => {
         let pool = payload && payload.pool ? payload.pool : "all";
@@ -601,6 +714,9 @@ io.on('connection', socket => {
         state.teams = [];
         state.auctionHistory = [];
         state.auctionState = { status: 'idle', queue: [], currentIndex: -1, currentBid: 0, currentBidTeam: null, timerRemaining: state.settings.timerDuration, bids: [], pendingPoolSwitch: null, currentPool: 'all' };
+        activeAdminSockets.clear();
+        activeTeamSockets.clear();
+        emitAuthPresence();
         if (fs.existsSync(AUTOSAVE_PATH)) {
             try { fs.unlinkSync(AUTOSAVE_PATH); } catch (e) { }
         }
@@ -952,7 +1068,10 @@ io.on('connection', socket => {
 
 
 
-    socket.on('disconnect', () => console.log('Disconnected:', socket.id));
+    socket.on('disconnect', () => {
+        releaseSocketAuth(socket);
+        console.log('Disconnected:', socket.id);
+    });
 });
 
 // Sync full state when someone connects

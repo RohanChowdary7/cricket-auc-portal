@@ -16,6 +16,7 @@ var _priorityNews = [];
 var _tickerClockInterval = null;
 var _lastTickerHTML = "";
 var socket = null;
+var authPresence = { activeAdmins: 0, maxAdmins: 2 };
 
 var videoIntroStarted = false;
 function startVideoSequence() {
@@ -193,6 +194,15 @@ try {
         });
 
         socket.on("auctionState:sync", function (data) { _applyRemoteState(data); });
+        socket.on("auth:presence", function (data) {
+            if (!data) return;
+            authPresence.activeAdmins = Number.isFinite(data.activeAdmins) ? data.activeAdmins : authPresence.activeAdmins;
+            authPresence.maxAdmins = Number.isFinite(data.maxAdmins) ? data.maxAdmins : authPresence.maxAdmins;
+            var el = document.getElementById("siActiveAdmins");
+            if (el) {
+                el.textContent = authPresence.activeAdmins + " / " + authPresence.maxAdmins;
+            }
+        });
         socket.on("toast:incoming", function (data) { toast(data.msg, data.type, null, true); });
 
         // Granular Sync Listeners for Real-Time UI
@@ -943,7 +953,60 @@ function getRatingTierClass(rating) {
     if (r >= 61) return " rating-tier-4";
     return " rating-tier-5";
 }
-function initAuth() { const s = loadSession(null); if (s) { currentUser = s; showApp(); return; } showLogin(); }
+function requestServerLogin(user, done) {
+    var cb = typeof done === "function" ? done : function () { };
+    if (!user) { cb(false, "Invalid user session."); return; }
+    if (!socket || !socket.connected) { cb(true); return; }
+
+    var payload = { role: user.role };
+    if (user.role === "team") {
+        payload.teamId = user.teamId;
+        payload.username = user.username;
+    }
+
+    socket.emit("auth:login", payload, function (resp) {
+        if (!resp || resp.success === undefined) {
+            cb(true);
+            return;
+        }
+        if (resp.success) cb(true);
+        else cb(false, resp.message || "Login limit reached. Please try again.");
+    });
+}
+
+function completeLogin(user, errEl) {
+    requestServerLogin(user, function (ok, msg) {
+        if (!ok) {
+            if (errEl) {
+                errEl.textContent = msg || "Login limit reached. Please try again.";
+                errEl.classList.remove("hidden");
+            }
+            return;
+        }
+        currentUser = user;
+        saveSession(currentUser);
+        if (errEl) errEl.classList.add("hidden");
+        showApp();
+    });
+}
+
+function initAuth() {
+    const s = loadSession(null);
+    if (s) {
+        requestServerLogin(s, function (ok, msg) {
+            if (ok) {
+                currentUser = s;
+                showApp();
+                return;
+            }
+            sessionStorage.removeItem(SESSION_KEY);
+            showLogin();
+            toast(msg || "Previous session expired due to login limit.", "warning", 4000, true);
+        });
+        return;
+    }
+    showLogin();
+}
 function hideGlobalAuctionOverlays() {
     ["aiIntroOverlay", "manualIntroOverlay", "poolTransitionOverlay", "aiPoolAnnouncement", "strategyOverlay", "goingOverlay"].forEach(function (id) {
         var el = document.getElementById(id);
@@ -956,6 +1019,7 @@ function hideGlobalAuctionOverlays() {
 function showLogin() { hideGlobalAuctionOverlays(); document.getElementById("loginPage").classList.add("active"); document.getElementById("mainApp").classList.add("hidden"); }
 function doLogout() {
     clearInterval(timerInterval);
+    if (socket && socket.connected) socket.emit("auth:logout");
     currentUser = null;
     sessionStorage.removeItem(SESSION_KEY);
     showLogin();
@@ -1648,6 +1712,7 @@ function renderAdminPanel() {
     document.getElementById("timerDuration").value = settings.timerDuration;
     document.getElementById("timerExtension").value = settings.extension;
     document.getElementById("timerThreshold").value = settings.threshold;
+    document.getElementById("siActiveAdmins").textContent = authPresence.activeAdmins + " / " + authPresence.maxAdmins;
     document.getElementById("siStatus").textContent = auctionState.status.toUpperCase();
     document.getElementById("siPlayer").textContent = auctionState.currentIndex >= 0 ? (function () { var p = players.find(function (p) { return p.id === auctionState.queue[auctionState.currentIndex]; }); return p ? p.name : "--"; })() : "--";
     document.getElementById("siDone").textContent = auctionState.currentIndex >= 0 ? auctionState.currentIndex : 0;
@@ -3059,9 +3124,11 @@ document.addEventListener("DOMContentLoaded", function () {
             var p = document.getElementById("adminPass").value;
             var errEl = document.getElementById("adminLoginError");
             if (u === localStorage.getItem(ADMIN_USER_KEY) && p === localStorage.getItem(ADMIN_PASS_KEY)) {
-                currentUser = { role: "admin", name: "Admin", username: "admin" };
-                saveSession(currentUser); if (errEl) errEl.classList.add("hidden"); showApp();
-            } else if (errEl) errEl.classList.remove("hidden");
+                completeLogin({ role: "admin", name: "Admin", username: "admin" }, errEl);
+            } else if (errEl) {
+                errEl.textContent = "Invalid admin credentials";
+                errEl.classList.remove("hidden");
+            }
         });
     }
 
@@ -3074,9 +3141,11 @@ document.addEventListener("DOMContentLoaded", function () {
             var errEl = document.getElementById("teamLoginError");
             var t = teams.find(function (t) { return t.username === u && t.password === p; });
             if (t) {
-                currentUser = { role: "team", teamId: t.id, name: t.name, username: t.username };
-                saveSession(currentUser); if (errEl) errEl.classList.add("hidden"); showApp();
-            } else if (errEl) errEl.classList.remove("hidden");
+                completeLogin({ role: "team", teamId: t.id, name: t.name, username: t.username }, errEl);
+            } else if (errEl) {
+                errEl.textContent = "Invalid team credentials";
+                errEl.classList.remove("hidden");
+            }
         });
     }
 
@@ -3084,9 +3153,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (spectatorLogin) {
         spectatorLogin.addEventListener("submit", function (e) {
             e.preventDefault();
-            currentUser = { role: "spectator", name: "Guest Spectator", username: "spectator" };
-            saveSession(currentUser);
-            showApp();
+            completeLogin({ role: "spectator", name: "Guest Spectator", username: "spectator" }, null);
         });
     }
 
@@ -3353,11 +3420,9 @@ document.addEventListener("submit", function (e) {
         var p = (document.getElementById("adminPass") || {}).value;
         var errEl = document.getElementById("adminLoginError");
         if ((u || "").trim() === localStorage.getItem(ADMIN_USER_KEY) && (p || "") === localStorage.getItem(ADMIN_PASS_KEY)) {
-            currentUser = { role: "admin", name: "Admin", username: "admin" };
-            saveSession(currentUser);
-            if (errEl) errEl.classList.add("hidden");
-            showApp();
+            completeLogin({ role: "admin", name: "Admin", username: "admin" }, errEl);
         } else if (errEl) {
+            errEl.textContent = "Invalid admin credentials";
             errEl.classList.remove("hidden");
         }
         return;
@@ -3370,11 +3435,9 @@ document.addEventListener("submit", function (e) {
         var teamErr = document.getElementById("teamLoginError");
         var t = teams.find(function (x) { return x.username === teamU && x.password === teamP; });
         if (t) {
-            currentUser = { role: "team", teamId: t.id, name: t.name, username: t.username };
-            saveSession(currentUser);
-            if (teamErr) teamErr.classList.add("hidden");
-            showApp();
+            completeLogin({ role: "team", teamId: t.id, name: t.name, username: t.username }, teamErr);
         } else if (teamErr) {
+            teamErr.textContent = "Invalid team credentials";
             teamErr.classList.remove("hidden");
         }
         return;
@@ -3382,9 +3445,7 @@ document.addEventListener("submit", function (e) {
 
     if (form.id === "spectatorLoginForm") {
         e.preventDefault();
-        currentUser = { role: "spectator", name: "Guest Spectator", username: "spectator" };
-        saveSession(currentUser);
-        showApp();
+        completeLogin({ role: "spectator", name: "Guest Spectator", username: "spectator" }, null);
     }
 }, true);
 
