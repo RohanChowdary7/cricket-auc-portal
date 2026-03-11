@@ -995,6 +995,10 @@ textarea {
 }
 
 @media(max-width:900px) {
+  .navbar {
+    overflow: visible;
+  }
+
   .hamburger {
     display: flex
   }
@@ -1002,30 +1006,76 @@ textarea {
   .nav-links {
     position: fixed;
     top: var(--navbar-h);
+    bottom: auto;
     left: 0;
     right: 0;
+    height: calc(100dvh - var(--navbar-h));
     flex-direction: column;
     align-items: stretch;
-    background: var(--bg2);
+    background: rgba(7, 10, 18, 0.97);
     border-bottom: 1px solid var(--border);
-    padding: 12px;
+    padding: 12px 12px 20px;
     gap: 4px;
-    transform: translateY(-100%);
-    opacity: 0;
-    pointer-events: none;
-    transition: all .3s;
+    max-height: calc(100dvh - var(--navbar-h));
+    overflow-y: auto;
+    display: none;
+    transition: opacity .2s ease;
     z-index: 99
   }
 
+  .nav-links>li {
+    width: 100%;
+  }
+
   .nav-links.open {
-    transform: translateY(0);
+    display: flex;
     opacity: 1;
-    pointer-events: all
+    pointer-events: all;
   }
 
   .nav-link {
     padding: 9px 12px;
-    font-size: .76rem
+    font-size: .76rem;
+    color: var(--text);
+    background-image: none;
+    -webkit-text-fill-color: initial;
+  }
+
+  .nav-controls-item {
+    justify-content: stretch;
+    margin-top: 4px;
+  }
+
+  .nav-links .nav-controls-group {
+    width: 100%;
+    max-width: none;
+    overflow: visible;
+    margin: 0;
+    justify-content: space-between;
+    height: auto;
+    min-height: 34px;
+  }
+
+  .nav-links .volume-control {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .nav-links .vol-slider {
+    width: min(140px, 42vw);
+  }
+
+  .nav-user-item {
+    margin-top: 4px;
+  }
+
+  .nav-user-item .nav-user {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .nav-user-item .btn-logout {
+    margin-left: auto;
   }
 
   .user-name {
@@ -6274,7 +6324,7 @@ textarea {
   }
 
   .nav-controls-group {
-    max-width: 48vw;
+    max-width: none;
     gap: 6px;
     padding: 5px 8px;
     border-radius: 14px;
